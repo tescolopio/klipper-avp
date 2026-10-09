@@ -16,3 +16,5 @@ jobs:
         run: python3 -m unittest discover -s tests/unit -v
       - name: Simulation tests
         run: python3 -m unittest discover -s tests/simulation -v
+      - name: Offline synthetic baseline
+        run: python3 -m avp.analytics.baseline

@@ -3,10 +3,11 @@ import os
 import tempfile
 import unittest
 
-from klippy.extras.avp_core import (
-    History, adaptive_count, clearance_prediction, grid_points, predict_height,
-    surface_stats,
+from avp.core.probing import (
+    adaptive_count, clearance_prediction, grid_points, predict_height,
 )
+from avp.analytics.topography import surface_stats
+from avp.history.storage import History
 
 
 def plane():

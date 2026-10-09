@@ -5,7 +5,9 @@ import math
 import os
 import sqlite3
 
-from . import avp_core
+from ..core import probing
+from ..analytics.topography import surface_stats
+from ..history.storage import History
 
 
 class AVP:
@@ -54,14 +56,14 @@ class AVP:
         self.toolhead = self.printer.lookup_object("toolhead")
         self.probe = self.printer.lookup_object("probe")
         try:
-            self.history = avp_core.History(self.history_path, self.history_limit)
+            self.history = History(self.history_path, self.history_limit)
         except (OSError, sqlite3.Error, ValueError) as exc:
             raise self.printer.config_error("AVP history: %s" % exc)
 
     def get_status(self, eventtime):
         return {"last_scan_id": self.last_scan_id,
                 "point_count": len(self.points),
-                "stats": avp_core.surface_stats(self.points) if self.points else None}
+                "stats": surface_stats(self.points) if self.points else None}
 
     def require_homed(self, gcmd):
         status = self.toolhead.get_status(self.printer.get_reactor().monotonic())
@@ -82,7 +84,7 @@ class AVP:
             previous = (history[0]["points"] if history
                         and history[0]["metadata"].get("bounds") == list(self.bounds)
                         else [])
-            return avp_core.adaptive_count(
+            return probing.adaptive_count(
                 previous, self.threshold, self.minimum, self.maximum)
         except (ValueError, sqlite3.Error, TypeError) as exc:
             raise gcmd.error("AVP history: %s" % exc)
@@ -97,7 +99,7 @@ class AVP:
                       if self.surface_bound is not None else None)
         travel_z = max(self.travel_z, trigger_offset + self.clearance,
                        approach_z if approach_z is not None else self.travel_z)
-        positions = avp_core.grid_points(self.bounds, count)
+        positions = probing.grid_points(self.bounds, count)
         for x, y in positions:
             nozzle_xy = (x - offsets[0], y - offsets[1])
             if any(not status["axis_minimum"][i] <= v <= status["axis_maximum"][i]
@@ -151,7 +153,7 @@ class AVP:
         self.points = samples
         self.last_scan_id = scan_id
         gcmd.respond_info("AVP scan %d: %dx%d points; %s" % (
-            scan_id, count, count, json.dumps(avp_core.surface_stats(samples))))
+            scan_id, count, count, json.dumps(surface_stats(samples))))
 
     def cmd_AVP_MESH(self, gcmd):
         self.require_homed(gcmd)
@@ -186,7 +188,7 @@ class AVP:
                 raise ValueError("Run AVP_SCAN before predicting clearance")
             start = (gcmd.get_float("X0"), gcmd.get_float("Y0"))
             end = (gcmd.get_float("X1"), gcmd.get_float("Y1"))
-            prediction = avp_core.clearance_prediction(
+            prediction = probing.clearance_prediction(
                 points, start, end, self.clearance, self.surface_bound)
         except (ValueError, sqlite3.Error, TypeError) as exc:
             raise gcmd.error("AVP clearance: %s" % exc)

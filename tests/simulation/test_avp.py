@@ -4,8 +4,7 @@ import unittest
 from collections import namedtuple
 from unittest.mock import Mock
 
-from klippy.extras.avp import AVP
-from klippy.extras.avp_core import History
+from avp.klipper.adapter import AVP
 
 
 Result = namedtuple("Result", "bed_x bed_y bed_z test_x test_y test_z")

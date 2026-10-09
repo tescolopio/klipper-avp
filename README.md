@@ -7,15 +7,19 @@ bed-topography analytics. No additional Python dependencies are needed.
 
 ## Installation
 
-On the printer host, link both modules into your Klipper installation. For
+On the printer host, link the complete package into your Klipper installation. For
 example, with this repository at `/home/pi/klipper-avp`:
 
 ```sh
-ln -s /home/pi/klipper-avp/klippy/extras/avp.py /home/pi/klipper/klippy/extras/avp.py
-ln -s /home/pi/klipper-avp/klippy/extras/avp_core.py /home/pi/klipper/klippy/extras/avp_core.py
+ln -s /home/pi/klipper-avp/avp /home/pi/klipper/klippy/extras/avp
 ```
 
-Copy the settings from `/home/pi/klipper-avp/config/avp.cfg` into your printer
+If upgrading from the old two-file layout, remove the old AVP symlinks
+`/home/pi/klipper/klippy/extras/avp.py` and
+`/home/pi/klipper/klippy/extras/avp_core.py` before creating the package link.
+Do not leave both the old module and new package installed.
+
+Copy the settings from `/home/pi/klipper-avp/configs/avp.cfg` into your printer
 configuration, **adjust the bed bounds and speeds for your machine**, and
 restart Klipper. An existing `[probe]`-compatible probe is required. The history
 directory must already exist and be writable. This extension uses Klipper's
@@ -96,6 +100,12 @@ locations and report whether recorded bounds/temperatures match; changes under
 different conditions should not be interpreted as bed wear.
 
 ## Development
+
+The package separates core planning, Klipper integration, history storage, and
+analytics under `avp/`. Tests are organized into `tests/unit`,
+`tests/simulation`, and `tests/hardware`; hardware tests are reserved for
+supervised validation and are not run in CI. See [repository layout](docs/layout.rst)
+for folder responsibilities. Example configurations are in `configs/`.
 
 Run the dependency-free tests from the repository root:
 

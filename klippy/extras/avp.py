@@ -90,7 +90,7 @@ class AVP:
     def cmd_AVP_SCAN(self, gcmd):
         status = self.require_homed(gcmd)
         count = self.probe_count(gcmd)
-        offsets = self.probe.get_offsets(gcmd)
+        offsets = self.probe.get_offsets()
         # Always clear the trigger height as well as the physical bed.
         trigger_offset = max(0., offsets[2])
         approach_z = (self.surface_bound + trigger_offset + self.clearance

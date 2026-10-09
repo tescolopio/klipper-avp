@@ -125,6 +125,14 @@ class CommandTests(unittest.TestCase):
         self.avp.cmd_AVP_SCAN(Command())
         self.assertFalse(any(move[0][2] == 3.5 for move in self.moves))
 
+    def test_legacy_probe_offsets_and_xyz_results(self):
+        self.probe.get_offsets = lambda: (5., 3., 1.)
+        self.session.pull_probed_results.side_effect = lambda: [
+            list(self.position[:3])]
+        self.avp.cmd_AVP_SCAN(Command())
+        self.assertEqual(self.avp.points[0], (10., 10., 0.))
+        self.assertEqual(len(self.avp.history.recent()[0]["points"]), 9)
+
     def test_scan_uses_historical_warp_for_adaptive_density(self):
         points = [(x, y, .2 if x == y == 20 else 0.)
                   for x in (10, 20, 30) for y in (10, 20, 30)]

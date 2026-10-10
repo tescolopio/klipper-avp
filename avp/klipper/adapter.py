@@ -48,7 +48,7 @@ class AVP:
         self.points = []
         self.last_scan_id = None
         self.printer.register_event_handler("klippy:connect", self.connect)
-        for name in ("SCAN", "MESH", "CLEARANCE", "LEVEL", "HISTORY"):
+        for name in ("PLAN", "SCAN", "MESH", "CLEARANCE", "LEVEL", "HISTORY"):
             self.gcode.register_command("AVP_" + name,
                                         getattr(self, "cmd_AVP_" + name))
 
@@ -89,16 +89,22 @@ class AVP:
         except (ValueError, sqlite3.Error, TypeError) as exc:
             raise gcmd.error("AVP history: %s" % exc)
 
-    def cmd_AVP_SCAN(self, gcmd):
+    def prepare_scan(self, gcmd):
+        """Shared read-only preflight for preview and execution."""
         status = self.require_homed(gcmd)
         count = self.probe_count(gcmd)
         offsets = self.probe.get_offsets()
-        # Always clear the trigger height as well as the physical bed.
-        trigger_offset = max(0., offsets[2])
-        approach_z = (self.surface_bound + trigger_offset + self.clearance
-                      if self.surface_bound is not None else None)
-        travel_z = max(self.travel_z, trigger_offset + self.clearance,
-                       approach_z if approach_z is not None else self.travel_z)
+        if len(offsets) != 3 or not all(math.isfinite(v) for v in offsets):
+            raise gcmd.error("AVP probe offsets must be finite XYZ")
+        fast = gcmd.get_int("FAST_APPROACH", int(self.surface_bound is not None),
+                            minval=0, maxval=1)
+        try:
+            heights = probing.scan_heights(
+                self.travel_z, self.clearance, offsets[2], self.surface_bound,
+                bool(fast))
+        except ValueError as exc:
+            raise gcmd.error("AVP scan: %s" % exc)
+        travel_z, approach_z = heights["travel_z"], heights["approach_z"]
         positions = probing.grid_points(self.bounds, count)
         for x, y in positions:
             nozzle_xy = (x - offsets[0], y - offsets[1])
@@ -109,6 +115,29 @@ class AVP:
             raise gcmd.error("AVP travel height exceeds Z limits")
         if approach_z is not None and approach_z < status["axis_minimum"][2]:
             raise gcmd.error("AVP approach height is below Z limits")
+        current_z = self.toolhead.get_position()[2]
+        if not math.isfinite(current_z) or current_z > status["axis_maximum"][2]:
+            raise gcmd.error("AVP current Z exceeds safe travel limits")
+        return status, count, offsets, positions, heights
+
+    def cmd_AVP_PLAN(self, gcmd):
+        status, count, offsets, positions, heights = self.prepare_scan(gcmd)
+        report = {"advisory_only": True, "bounds": self.bounds,
+                  "grid_count": count, "point_count": len(positions),
+                  "fast_approach": heights["approach_z"] is not None,
+                  "surface_bound": self.surface_bound,
+                  "travel_z": heights["travel_z"],
+                  "approach_z": heights["approach_z"],
+                  "approach_speed": self.approach_speed,
+                  "travel_speed": self.speed,
+                  "probe_z_offset": offsets[2]}
+        gcmd.respond_info("AVP plan (no motion; bound is not validated): %s"
+                          % json.dumps(report))
+
+    def cmd_AVP_SCAN(self, gcmd):
+        status, count, offsets, positions, heights = self.prepare_scan(gcmd)
+        travel_z, approach_z = heights["travel_z"], heights["approach_z"]
+        trigger_offset = heights["trigger_offset"]
         self.points = []
         samples = []
         session = self.probe.start_probe_session(gcmd)
@@ -137,7 +166,13 @@ class AVP:
                     raise gcmd.error("AVP received a non-finite probe result")
                 samples.append(point)
                 travel_z = max(travel_z, point[2] + trigger_offset + self.clearance)
-                if travel_z > status["axis_maximum"][2]:
+                # Retraction must never descend if native sampling/deployment
+                # ended above the planned height. Carry this floor to next XY.
+                current_z = self.toolhead.get_position()[2]
+                if not math.isfinite(current_z):
+                    raise gcmd.error("AVP received a non-finite toolhead Z")
+                travel_z = max(travel_z, current_z)
+                if not math.isfinite(travel_z) or travel_z > status["axis_maximum"][2]:
                     raise gcmd.error("AVP measured surface exceeds safe travel limits")
                 self.toolhead.manual_move(
                     [None, None, travel_z], self.approach_speed)

@@ -1,3 +1,5 @@
+import json
+import math
 import os
 import tempfile
 import unittest
@@ -232,6 +234,149 @@ class CommandTests(unittest.TestCase):
         self.config.params["clearance"] = "nan"
         with self.assertRaisesRegex(RuntimeError, "finite"):
             AVP(self.config)
+
+    def test_plan_is_read_only_and_matches_scan_geometry(self):
+        self.avp.points = [(10, 10, 0), (10, 30, 0), (30, 10, 0)]
+        original = list(self.avp.points)
+        cmd = Command(FAST_APPROACH=1)
+        self.avp.cmd_AVP_PLAN(cmd)
+        report = json.loads(cmd.messages[0].split(": ", 1)[1])
+        self.assertEqual(report["point_count"], 9)
+        self.assertEqual(report["travel_z"], 10.)
+        self.assertEqual(report["approach_z"], 3.5)
+        self.assertTrue(report["fast_approach"])
+        self.assertEqual(self.avp.points, original)
+        self.assertEqual(self.avp.history.recent(), [])
+        self.assertEqual(self.moves, [])
+        self.probe.start_probe_session.assert_not_called()
+        self.gcode.run_script_from_command.assert_not_called()
+        self.toolhead.wait_moves.assert_not_called()
+
+    def test_fast_approach_requires_bound_before_motion_or_session(self):
+        self.avp.surface_bound = None
+        for method in (self.avp.cmd_AVP_PLAN, self.avp.cmd_AVP_SCAN):
+            with self.assertRaisesRegex(RuntimeError, "requires configured"):
+                method(Command(FAST_APPROACH=1))
+        self.assertEqual(self.moves, [])
+        self.probe.start_probe_session.assert_not_called()
+
+    def test_fast_approach_switch_is_per_command_and_validated(self):
+        self.avp.cmd_AVP_SCAN(Command(FAST_APPROACH=0))
+        self.assertFalse(any(m[0][2] == 3.5 for m in self.moves))
+        self.moves.clear()
+        self.avp.cmd_AVP_SCAN(Command())
+        self.assertTrue(any(m[0][2] == 3.5 for m in self.moves))
+        self.moves.clear()
+        for value in (-1, 2):
+            with self.assertRaises(RuntimeError):
+                self.avp.cmd_AVP_SCAN(Command(FAST_APPROACH=value))
+        self.assertEqual(self.moves, [])
+
+    def test_baseline_still_enforces_configured_surface_bound(self):
+        self.session.pull_probed_results.side_effect = lambda: [
+            Result(10, 10, .6, 5, 7, 1.6)]
+        with self.assertRaisesRegex(RuntimeError, "bound violated"):
+            self.avp.cmd_AVP_SCAN(Command(FAST_APPROACH=0))
+        self.assertEqual(self.position[2], 10.)
+        self.assertEqual(self.avp.history.recent(), [])
+        self.session.end_probe_session.assert_called_once()
+
+    def test_native_high_finish_is_never_followed_by_downward_retraction(self):
+        def finish_high(gcmd):
+            self.position[2] = 12.
+        self.session.run_probe.side_effect = finish_high
+        self.avp.cmd_AVP_SCAN(Command(FAST_APPROACH=0))
+        self.assertEqual(self.position[2], 12.)
+        for requested, actual, speed in self.moves[3:]:
+            self.assertGreaterEqual(actual[2], 12.)
+
+    def test_preflight_rejects_invalid_offsets_current_z_and_height_limits(self):
+        for offset in (math.nan, math.inf):
+            self.probe.get_offsets.return_value = (0, 0, offset)
+            with self.assertRaisesRegex(RuntimeError, "offsets"):
+                self.avp.cmd_AVP_SCAN(Command())
+        self.probe.get_offsets.return_value = (5, 3, 1)
+        for z in (math.nan, math.inf, 201):
+            self.position[2] = z
+            with self.assertRaisesRegex(RuntimeError, "current Z"):
+                self.avp.cmd_AVP_SCAN(Command())
+        self.position[2] = 10.
+        self.avp.surface_bound = 200.
+        with self.assertRaisesRegex(RuntimeError, "travel height"):
+            self.avp.cmd_AVP_SCAN(Command())
+        self.avp.surface_bound = -10.
+        with self.assertRaisesRegex(RuntimeError, "approach height"):
+            self.avp.cmd_AVP_SCAN(Command())
+        self.assertEqual(self.moves, [])
+        self.probe.start_probe_session.assert_not_called()
+
+    def test_invalid_native_finish_closes_session_without_saving(self):
+        for z in (math.nan, math.inf, 201):
+            with self.subTest(z=z):
+                self.position[2] = 10.
+                self.session.reset_mock()
+                self.session.run_probe.side_effect = lambda gcmd: self.position.__setitem__(2, z)
+                with self.assertRaises(RuntimeError):
+                    self.avp.cmd_AVP_SCAN(Command())
+                self.session.end_probe_session.assert_called_once()
+                self.assertEqual(self.avp.history.recent(), [])
+
+    def test_25_point_tap_ab_preserves_samples_and_clearance(self):
+        # Ideal constant-speed simulation, not a hardware timing claim.
+        # Native three-sample probing and one retry batch are identical in A/B.
+        self.avp.bounds = (50., 50., 450., 450.)
+        self.avp.minimum = self.avp.maximum = 5
+        self.avp.approach_speed = 5.
+        self.status["axis_maximum"] = (500, 500, 500)
+        self.probe.get_offsets.return_value = (0., 0., -1.372)
+        times, results, starts = [], [], []
+        for fast in (0, 1):
+            self.position[:] = [50., 50., 10., 0.]
+            self.moves.clear()
+            elapsed, touches, probe_starts = [0.], [0], []
+            command = Command(FAST_APPROACH=fast, PROBE_SPEED=2.5,
+                              SAMPLES=3, SAMPLES_TOLERANCE=.01,
+                              SAMPLES_TOLERANCE_RETRIES=10)
+
+            def timed_move(position, speed):
+                before = list(self.position)
+                self.move(position, speed)
+                elapsed[0] += math.sqrt(sum((a - b) ** 2 for a, b in
+                                           zip(self.position[:3], before[:3]))) / speed
+
+            def native_probe(gcmd):
+                self.assertIs(gcmd, command)
+                self.assertEqual(gcmd.params["SAMPLES_TOLERANCE"], .01)
+                self.assertEqual(gcmd.params["SAMPLES_TOLERANCE_RETRIES"], 10)
+                probe_starts.append(self.position[2])
+                elapsed[0] += (self.position[2] - (-1.372)) / 2.5
+                batch = gcmd.params["SAMPLES"]
+                # One identical simulated tolerance retry at the first point.
+                n = batch * (2 if len(probe_starts) == 1 else 1)
+                elapsed[0] += (n - 1) * (5. / 2.5 + 5. / 2.5)
+                touches[0] += n
+                self.position[2] = -1.372
+
+            self.toolhead.manual_move.side_effect = timed_move
+            self.session.run_probe.side_effect = native_probe
+            self.session.pull_probed_results.side_effect = lambda: [Result(
+                self.position[0], self.position[1], 0.,
+                self.position[0], self.position[1], -1.372)]
+            self.avp.cmd_AVP_SCAN(command)
+            self.assertEqual(touches[0], 78)
+            self.assertEqual(len(probe_starts), 25)
+            self.assertEqual(self.position[2], 10.)
+            for requested, actual, speed in self.moves:
+                if requested[0] is not None:
+                    self.assertGreaterEqual(actual[2], 10.)
+            times.append(elapsed[0])
+            results.append(list(self.avp.points))
+            starts.append(probe_starts)
+        self.assertEqual(results[0], results[1])
+        self.assertEqual(starts[0], [10.] * 25)
+        self.assertEqual(starts[1], [2.5] * 25)
+        # 25 * 7.5 mm * (1/2.5 - 1/5) = 37.5 seconds saved in this model.
+        self.assertAlmostEqual(times[0] - times[1], 37.5)
 
 
 if __name__ == "__main__":

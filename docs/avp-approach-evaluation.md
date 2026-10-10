@@ -57,8 +57,8 @@ An incomplete lifecycle tracker must not be represented as a safety interlock.
 
 ## Next milestones, in priority order
 
-1. Test the existing coarse/fine QGL sequence against pinned Klipper code and
-   capture native baseline timings, convergence and total touches. Preserve
+1. Pinned-code coarse/fine contract tests are implemented (see below). Hardware
+   baseline timings and convergence measurements remain pending. Preserve
    BigBoom's configured four QGL points, Tap protections, final samples/tolerance.
 2. Design acceleration within the second QGL pass, accounting for each gantry
    adjustment changing the coordinate reference. Do not apply pre-adjustment
@@ -88,3 +88,54 @@ not validate endstop stopping behavior or demonstrate second-pass acceleration.
 A hypothetical 10-to-2.5 mm descent at 5 instead of 2.5 mm/s saves 1.5 seconds
 per point before overhead. This is arithmetic, not a hardware benchmark, a
 validated surface bound, or an implemented QGL optimization.
+
+## Pinned Klipper integration tests
+
+The separate CI job runs 10 tests using upstream revision
+`461c4e3722c3a897fba1c6b3f0780a5315043842`. It exercises AVP's real `cmd_AVP_LEVEL`,
+Klipper's QGL geometry and adjustment limits, `RetryHelper`, `ProbePointsHelper`,
+`ProbeParameterHelper`, `SampleAveragingHelper`, and native command parsing.
+No upstream source is copied or modified. A wrong revision or tracked modification
+in the reference checkout fails the test module rather than silently skipping it.
+
+Run separately from the 50 ordinary offline tests, using an isolated checkout:
+
+```sh
+git clone https://github.com/Klipper3d/klipper.git ../klipper-reference
+git -C ../klipper-reference checkout --detach 461c4e3722c3a897fba1c6b3f0780a5315043842
+KLIPPER_SOURCE="$(cd ../klipper-reference && pwd)" \
+  python3 -m unittest discover -s tests/integration -v
+```
+
+For PowerShell, set `$env:KLIPPER_SOURCE` to the checkout's absolute path, then
+run the same `python -m unittest discover -s tests/integration -v` command.
+The integration directory intentionally is not a package, keeping ordinary
+recursive test discovery independent of the external checkout.
+
+Verified scenarios:
+
+| Scenario | Result |
+| --- | --- |
+| Coarse pass then converged refinement | 4 single touches, then 12 touches at 3 per corner; 2 adjustment callbacks |
+| One refinement retry | All four corners reprobed; 28 total touches |
+| Native sample tolerance retry | Real averaging loop discards the bad sample group; 18 total touches |
+| Timeout at start/middle of either pass | Error propagated; session cleaned up; no later simulated move |
+| Coarse adjustment above native maximum | No adjustment callback or refinement command |
+| Coarse adjustment callback fails | No refinement command; session cleaned up |
+| Refinement retries exhausted or error increasing | Native error; no success response; applied status false |
+| Sample retries exhausted | Refinement aborts; session cleaned up |
+| XYZ not homed | No native command, probing or motion |
+
+The fixtures use the 50..450 mm corner pattern, -1.372 mm probe offset, 2.5 mm/s
+probe speed, three median samples, 5 mm sample retract, 0.01 mm sample tolerance
+and ten sample retries. Gantry motor locations and post-adjustment measurements
+are synthetic. The harness replaces toolhead movement, the raw probe hardware
+session and physical stepper adjustment, and reproduces the top-level command
+error event for cleanup. It does not execute MCU homing, Tap activation templates,
+CAN transport, the real motor-adjustment implementation or thermal behavior.
+
+Notable native behavior: `RETRIES=0` returns done without a convergence check and
+can temporarily mark QGL applied after the coarse pass. The refinement command
+resets that status and must independently pass tolerance. The tests check final
+status on both success and failure; coarse status is not a clearance authorization.
+Acceleration and preparation invalidation remain a separate follow-up PR.

@@ -18,3 +18,19 @@ jobs:
         run: python3 -m unittest discover -s tests/simulation -v
       - name: Offline synthetic baseline
         run: python3 -m avp.analytics.baseline
+
+  pinned-klipper:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Checkout BigBoom host revision for offline tests
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: Klipper3d/klipper
+          ref: 461c4e3722c3a897fba1c6b3f0780a5315043842
+          path: .klipper-reference
+          persist-credentials: false
+      - name: Native QGL and probe-session integration tests
+        env:
+          KLIPPER_SOURCE: ${{ github.workspace }}/.klipper-reference
+        run: python3 -m unittest discover -s tests/integration -v

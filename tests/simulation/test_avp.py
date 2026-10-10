@@ -1,3 +1,5 @@
+import json
+import math
 import os
 import tempfile
 import unittest
@@ -103,7 +105,7 @@ class CommandTests(unittest.TestCase):
     def touch(self, gcmd):
         self.position[2] = 1.
 
-    def test_scan_lifts_before_xy_and_approaches_above_trigger(self):
+    def test_scan_lifts_before_xy_without_unmonitored_descent(self):
         cmd = Command()
         self.avp.cmd_AVP_SCAN(cmd)
         self.assertEqual(len(self.avp.points), 9)
@@ -114,8 +116,8 @@ class CommandTests(unittest.TestCase):
             if requested[0] is not None:
                 self.assertGreaterEqual(actual[2], 10.)
                 self.assertIsNone(self.moves[i - 1][0][0])
-            elif requested[2] == 3.5:
-                self.assertGreater(actual[2], 1.)
+            else:
+                self.assertGreaterEqual(requested[2], 10.)
         self.assertEqual(self.position[2], 10.)
         self.assertIn("3x3", cmd.messages[0])
 
@@ -232,6 +234,165 @@ class CommandTests(unittest.TestCase):
         self.config.params["clearance"] = "nan"
         with self.assertRaisesRegex(RuntimeError, "finite"):
             AVP(self.config)
+
+    def test_plan_is_read_only_and_matches_scan_geometry(self):
+        self.avp.points = [(10, 10, 0), (10, 30, 0), (30, 10, 0)]
+        original = list(self.avp.points)
+        cmd = Command(FAST_APPROACH=1)
+        self.avp.cmd_AVP_PLAN(cmd)
+        report = json.loads(cmd.messages[0].split(": ", 1)[1])
+        self.assertEqual(report["point_count"], 9)
+        self.assertEqual(report["travel_z"], 10.)
+        self.assertEqual(report["approach_z"], 3.5)
+        self.assertTrue(report["fast_approach"])
+        self.assertFalse(report["fast_approach_executable"])
+        self.assertEqual(self.avp.points, original)
+        self.assertEqual(self.avp.history.recent(), [])
+        self.assertEqual(self.moves, [])
+        self.probe.start_probe_session.assert_not_called()
+        self.gcode.run_script_from_command.assert_not_called()
+        self.toolhead.wait_moves.assert_not_called()
+
+    def test_fast_approach_requires_bound_before_motion_or_session(self):
+        self.avp.surface_bound = None
+        with self.assertRaisesRegex(RuntimeError, "requires configured"):
+            self.avp.cmd_AVP_PLAN(Command(FAST_APPROACH=1))
+        with self.assertRaisesRegex(RuntimeError, "fast approach disabled"):
+            self.avp.cmd_AVP_SCAN(Command(FAST_APPROACH=1))
+        self.assertEqual(self.moves, [])
+        self.probe.start_probe_session.assert_not_called()
+
+    def test_fast_approach_switch_is_per_command_and_validated(self):
+        self.avp.cmd_AVP_SCAN(Command(FAST_APPROACH=0))
+        self.assertFalse(any(m[0][2] == 3.5 for m in self.moves))
+        self.moves.clear()
+        self.avp.cmd_AVP_SCAN(Command())
+        self.assertFalse(any(m[0][2] == 3.5 for m in self.moves))
+        self.moves.clear()
+        for value in (-1, 2):
+            with self.assertRaises(RuntimeError):
+                self.avp.cmd_AVP_SCAN(Command(FAST_APPROACH=value))
+        self.assertEqual(self.moves, [])
+
+    def test_baseline_still_enforces_configured_surface_bound(self):
+        self.session.pull_probed_results.side_effect = lambda: [
+            Result(10, 10, .6, 5, 7, 1.6)]
+        with self.assertRaisesRegex(RuntimeError, "bound violated"):
+            self.avp.cmd_AVP_SCAN(Command(FAST_APPROACH=0))
+        self.assertEqual(self.position[2], 10.)
+        self.assertEqual(self.avp.history.recent(), [])
+        self.session.end_probe_session.assert_called_once()
+
+    def test_native_high_finish_is_never_followed_by_downward_retraction(self):
+        def finish_high(gcmd):
+            self.position[2] = 12.
+        self.session.run_probe.side_effect = finish_high
+        self.avp.cmd_AVP_SCAN(Command(FAST_APPROACH=0))
+        self.assertEqual(self.position[2], 12.)
+        for requested, actual, speed in self.moves[3:]:
+            self.assertGreaterEqual(actual[2], 12.)
+
+    def test_preflight_rejects_invalid_offsets_current_z_and_height_limits(self):
+        for offset in (math.nan, math.inf):
+            self.probe.get_offsets.return_value = (0, 0, offset)
+            with self.assertRaisesRegex(RuntimeError, "offsets"):
+                self.avp.cmd_AVP_SCAN(Command())
+        self.probe.get_offsets.return_value = (5, 3, 1)
+        for z in (math.nan, math.inf, 201):
+            self.position[2] = z
+            with self.assertRaisesRegex(RuntimeError, "current Z"):
+                self.avp.cmd_AVP_SCAN(Command())
+        self.position[2] = 10.
+        self.avp.surface_bound = 200.
+        with self.assertRaisesRegex(RuntimeError, "travel height"):
+            self.avp.cmd_AVP_SCAN(Command())
+        self.avp.surface_bound = -10.
+        with self.assertRaisesRegex(RuntimeError, "approach height"):
+            self.avp.cmd_AVP_PLAN(Command(FAST_APPROACH=1))
+        self.assertEqual(self.moves, [])
+        self.probe.start_probe_session.assert_not_called()
+
+    def test_invalid_native_finish_closes_session_without_saving(self):
+        for z in (math.nan, math.inf, 201):
+            with self.subTest(z=z):
+                self.position[2] = 10.
+                self.session.reset_mock()
+                self.session.run_probe.side_effect = lambda gcmd: self.position.__setitem__(2, z)
+                with self.assertRaises(RuntimeError):
+                    self.avp.cmd_AVP_SCAN(Command())
+                self.session.end_probe_session.assert_called_once()
+                self.assertEqual(self.avp.history.recent(), [])
+
+    def test_25_point_tap_baseline_preserves_samples_and_clearance(self):
+        self.avp.bounds = (50., 50., 450., 450.)
+        self.avp.minimum = self.avp.maximum = 5
+        self.avp.approach_speed = 5.
+        self.status["axis_maximum"] = (500, 500, 500)
+        self.probe.get_offsets.return_value = (0., 0., -1.372)
+        self.position[:] = [50., 50., 10., 0.]
+        touches, probe_starts = [], []
+        command = Command(FAST_APPROACH=0, PROBE_SPEED=2.5, SAMPLES=3,
+                          SAMPLES_TOLERANCE=.01, SAMPLES_TOLERANCE_RETRIES=10)
+
+        def native_probe(gcmd):
+            self.assertIs(gcmd, command)
+            self.assertEqual(gcmd.params["SAMPLES_TOLERANCE"], .01)
+            self.assertEqual(gcmd.params["SAMPLES_TOLERANCE_RETRIES"], 10)
+            probe_starts.append(self.position[2])
+            # One simulated tolerance retry at the first point.
+            touches.append(gcmd.params["SAMPLES"] *
+                           (2 if len(probe_starts) == 1 else 1))
+            self.position[2] = -1.372
+
+        self.session.run_probe.side_effect = native_probe
+        self.session.pull_probed_results.side_effect = lambda: [Result(
+            self.position[0], self.position[1], 0.,
+            self.position[0], self.position[1], -1.372)]
+        self.avp.cmd_AVP_SCAN(command)
+        self.assertEqual(sum(touches), 78)
+        self.assertEqual(len(self.avp.points), 25)
+        self.assertEqual(probe_starts, [10.] * 25)
+        self.assertEqual(self.position[2], 10.)
+        for requested, actual, speed in self.moves:
+            if requested[0] is not None:
+                self.assertGreaterEqual(actual[2], 10.)
+
+    def test_failed_coarse_leveling_never_starts_refinement(self):
+        self.objects["quad_gantry_level"] = Mock()
+        self.avp.points = [(10, 10, 0)]
+        self.gcode.run_script_from_command.side_effect = RuntimeError("Probe failed")
+        cmd = Command()
+        with self.assertRaisesRegex(RuntimeError, "Probe failed"):
+            self.avp.cmd_AVP_LEVEL(cmd)
+        self.gcode.run_script_from_command.assert_called_once_with(
+            "QUAD_GANTRY_LEVEL SAMPLES=1 RETRIES=0")
+        self.assertEqual(self.avp.points, [])
+        self.assertEqual(cmd.messages, [])
+
+    def test_fast_rejected_even_with_bound_without_mutating_completed_scan(self):
+        self.avp.cmd_AVP_SCAN(Command())
+        points = list(self.avp.points)
+        scan_id = self.avp.last_scan_id
+        history = self.avp.history.recent()
+        self.moves.clear()
+        self.probe.reset_mock()
+        for bound in (None, .5, 100.):
+            self.avp.surface_bound = bound
+            with self.subTest(bound=bound):
+                with self.assertRaisesRegex(RuntimeError, "fast approach disabled"):
+                    self.avp.cmd_AVP_SCAN(Command(FAST_APPROACH=1))
+        self.assertEqual(self.moves, [])
+        self.probe.start_probe_session.assert_not_called()
+        self.assertEqual(self.avp.points, points)
+        self.assertEqual(self.avp.last_scan_id, scan_id)
+        self.assertEqual(self.avp.history.recent(), history)
+
+    def test_preview_does_not_authorize_fast_scan(self):
+        self.avp.cmd_AVP_PLAN(Command(FAST_APPROACH=1))
+        with self.assertRaisesRegex(RuntimeError, "fast approach disabled"):
+            self.avp.cmd_AVP_SCAN(Command(FAST_APPROACH=1))
+        self.assertEqual(self.moves, [])
+        self.probe.start_probe_session.assert_not_called()
 
 
 if __name__ == "__main__":

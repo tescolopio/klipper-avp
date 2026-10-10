@@ -5,6 +5,33 @@ from .geometry import validate_points
 from ..analytics.topography import surface_stats
 
 
+def scan_heights(travel_z, margin, probe_offset, surface_bound=None,
+                 fast_approach=False):
+    """Plan vertical heights without lowering XY clearance for an A/B scan.
+
+    The bound is an external physical assumption, never inferred from history.
+    Keep its travel floor even when fast approach is disabled for comparison.
+    """
+    values = [travel_z, margin, probe_offset]
+    if surface_bound is not None:
+        values.append(surface_bound)
+    if not all(math.isfinite(v) for v in values) or travel_z <= 0 or margin <= 0:
+        raise ValueError("Scan heights must be finite with positive travel/margin")
+    if fast_approach and surface_bound is None:
+        raise ValueError("FAST_APPROACH=1 requires configured max_surface_z")
+    trigger_offset = max(0., probe_offset)
+    bound_z = (surface_bound + trigger_offset + margin
+               if surface_bound is not None else None)
+    travel = max(travel_z, trigger_offset + margin,
+                 bound_z if bound_z is not None else travel_z)
+    if not math.isfinite(travel) or (bound_z is not None
+                                     and not math.isfinite(bound_z)):
+        raise ValueError("Computed scan heights must be finite")
+    return {"travel_z": travel,
+            "approach_z": bound_z if fast_approach else None,
+            "trigger_offset": trigger_offset}
+
+
 def grid_points(bounds, count):
     x0, y0, x1, y1 = bounds
     if not all(math.isfinite(v) for v in bounds) or x0 >= x1 or y0 >= y1:

@@ -32,6 +32,7 @@ Home XYZ before any probing, mesh calibration, or leveling.
 
 | Command | Behavior |
 | --- | --- |
+| `AVP_PLAN FAST_APPROACH=0` | Preview scan bounds, grid, and vertical heights without moving or probing. Requires XYZ homed. |
 | `AVP_SCAN PROBE_SPEED=3` | Probe a serpentine regular grid using native probe sampling and persist a completed scan. |
 | `AVP_MESH ADAPTIVE=1 ADAPTIVE_MARGIN=5` | Install a native Klipper bed mesh with history-selected grid density and optional print-area clipping. Requires rectangular `[bed_mesh]`; object clipping uses Klipper's `[exclude_object]`. |
 | `AVP_CLEARANCE X0=30 Y0=30 X1=180 Y1=180` | Report estimated path peak and recommended nozzle Z, without moving. XY is in measured bed coordinates. |
@@ -69,20 +70,37 @@ including sampling/tolerance retries. It never changes native probe speed or
 individual Z motors directly. `PROBE_SPEED`, `SAMPLES`, and other native probe
 options can be supplied to `AVP_SCAN`.
 
-To enable fast approach, explicitly set `max_surface_z` to a **verified upper
-bound on physical bed height in homed toolhead coordinates** across the entire
-scan. AVP approaches at `approach_speed` only to:
+Fast approach execution is disabled pending a verified endstop-monitored backend.
+`AVP_SCAN FAST_APPROACH=1` rejects before motion or probe activation, even with a
+configured bound. Omitting the parameter always uses native slow probing. This
+changes the old behavior where a configured bound enabled an unmonitored descent.
+
+For planning only, `AVP_PLAN FAST_APPROACH=1` requires `max_surface_z` and previews:
 
 ```
 max_surface_z + max(probe_z_offset, 0) + clearance
 ```
 
-It then probes at native `PROBE_SPEED`. Travel Z is at least
+Baseline scans probe at native `PROBE_SPEED`. Travel Z is at least
 `horizontal_move_z`, the approach height, and the highest measured trigger
 height plus clearance. The probe trigger offset is included so the approach
 does not deliberately cross the trigger plane. A measurement above the bound
 stops the scan after retraction, but **cannot retroactively prevent a collision
 from an incorrect bound**. Leave this setting disabled until validated.
+
+`FAST_APPROACH=0` on `AVP_SCAN` selects native probing from the travel height.
+Scans retain the configured XY travel floor and enforce the configured
+surface bound. Retraction never commands a descent when native probing ends
+above that floor. Native repeated samples, sample retraction, tolerances, retries,
+and activation hooks remain under Klipper's control.
+
+`AVP_PLAN` uses the same homing, bounds, and height preflight as `AVP_SCAN`, and
+accepts `FAST_APPROACH=1` for hypothetical geometry only, reporting
+`fast_approach_executable: false`. It does not start a probe session, move,
+save a scan, or validate a physical bound. Reported travel Z is the initial floor;
+current Z or measurements may raise it during execution. See the
+[AVP approach evaluation](docs/avp-approach-evaluation.md) for the simulated
+benefit, limitations, and controlled comparison protocol.
 
 History predictions **never lower motion clearance**. The path estimate uses
 inverse-distance interpolation within measured bounds; the recommendation uses

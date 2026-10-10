@@ -96,7 +96,7 @@ class AVP:
         offsets = self.probe.get_offsets()
         if len(offsets) != 3 or not all(math.isfinite(v) for v in offsets):
             raise gcmd.error("AVP probe offsets must be finite XYZ")
-        fast = gcmd.get_int("FAST_APPROACH", int(self.surface_bound is not None),
+        fast = gcmd.get_int("FAST_APPROACH", 0,
                             minval=0, maxval=1)
         try:
             heights = probing.scan_heights(
@@ -125,6 +125,7 @@ class AVP:
         report = {"advisory_only": True, "bounds": self.bounds,
                   "grid_count": count, "point_count": len(positions),
                   "fast_approach": heights["approach_z"] is not None,
+                  "fast_approach_executable": False,
                   "surface_bound": self.surface_bound,
                   "travel_z": heights["travel_z"],
                   "approach_z": heights["approach_z"],
@@ -135,8 +136,14 @@ class AVP:
                           % json.dumps(report))
 
     def cmd_AVP_SCAN(self, gcmd):
+        # A physical bound is not an endstop. Reject before any session,
+        # activation hook, motion, or mutation of completed scan state.
+        if gcmd.get_int("FAST_APPROACH", 0, minval=0, maxval=1):
+            raise gcmd.error(
+                "AVP fast approach disabled: monitored approach is not "
+                "implemented; use FAST_APPROACH=0")
         status, count, offsets, positions, heights = self.prepare_scan(gcmd)
-        travel_z, approach_z = heights["travel_z"], heights["approach_z"]
+        travel_z = heights["travel_z"]
         trigger_offset = heights["trigger_offset"]
         self.points = []
         samples = []
@@ -148,9 +155,6 @@ class AVP:
                 self.toolhead.manual_move([None, None, z], self.approach_speed)
                 self.toolhead.manual_move(
                     [x - offsets[0], y - offsets[1], None], self.speed)
-                if approach_z is not None:
-                    self.toolhead.manual_move(
-                        [None, None, approach_z], self.approach_speed)
                 session.run_probe(gcmd)
                 results = session.pull_probed_results()
                 if len(results) != 1:

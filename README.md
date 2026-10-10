@@ -117,3 +117,15 @@ python3 -m unittest discover -s tests -v
 The tests cover planning, persistence, and Klipper command integration with
 simulated toolhead/probe objects. Hardware accuracy, physical clearance, and
 performance still require validation on the target printer.
+
+Run the deterministic, offline planning baseline (no printer connection):
+
+```sh
+python3 -m avp.analytics.baseline
+```
+
+It reports synthetic point budgets and an intentionally missed surface peak,
+not measured speed improvements. See the [milestone audit](docs/milestone-audit.md)
+for implemented features, remaining gaps, results, and next acceptance criteria.
+The new [history context checks](docs/history-context.md) are an offline API;
+Klipper commands do not yet enforce age or temperature limits.

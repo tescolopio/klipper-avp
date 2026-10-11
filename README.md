@@ -147,3 +147,9 @@ not measured speed improvements. See the [milestone audit](docs/milestone-audit.
 for implemented features, remaining gaps, results, and next acceptance criteria.
 The new [history context checks](docs/history-context.md) are an offline API;
 Klipper commands do not yet enforce age or temperature limits.
+
+The [variable-speed prototype](docs/variable-speed-prototype.md) is isolated in
+`experiments/` and is not imported by the printer adapter. It explores monitored
+two-speed descent and one-use preparation against simulated hardware. Run its
+offline, synthetic corner report with `python3 -m experiments.variable_speed_demo`.
+It does not enable accelerated printer motion.

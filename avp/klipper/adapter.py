@@ -4,6 +4,7 @@ import json
 import math
 import os
 import sqlite3
+from contextlib import nullcontext
 
 from ..core import probing
 from ..analytics.topography import surface_stats
@@ -47,6 +48,8 @@ class AVP:
         self.history = None
         self.points = []
         self.last_scan_id = None
+        self.shadow_observer = None
+        self.printer.register_event_handler("probe:update_results", self.observe_shadow_probe)
         self.printer.register_event_handler("klippy:connect", self.connect)
         for name in ("PLAN", "SCAN", "MESH", "CLEARANCE", "LEVEL", "HISTORY"):
             self.gcode.register_command("AVP_" + name,
@@ -245,13 +248,49 @@ class AVP:
         if method not in objects or self.printer.lookup_object(
                 objects[method], None) is None:
             raise gcmd.error("AVP_LEVEL requires configured QGL or Z tilt")
+        observer = None
+        if gcmd.get_int("SHADOW", 0, minval=0, maxval=1):
+            from .qgl_shadow import QGLShadow, SUPPORTED_VERSION
+            version = self.printer.get_start_args().get("software_version", "")
+            if method != "QUAD_GANTRY_LEVEL" or version not in (
+                    SUPPORTED_VERSION, SUPPORTED_VERSION + "-dirty"):
+                raise gcmd.error("AVP shadow requires QGL on Klipper " + SUPPORTED_VERSION)
+            if getattr(self, "shadow_observer", None) is not None:
+                raise gcmd.error("AVP shadow already active")
+            qgl = self.printer.lookup_object("quad_gantry_level")
+            if type(qgl).__module__ != "extras.quad_gantry_level":
+                raise gcmd.error("AVP shadow requires the native QGL implementation")
+            try:
+                observer = QGLShadow(self, qgl,
+                    gcmd.get_float("SHADOW_UNCERTAINTY", .1, minval=0.),
+                    gcmd.get_float("SHADOW_STOP_RESERVE", .5, minval=0.))
+            except ValueError as exc:
+                raise gcmd.error("AVP shadow: %s" % exc)
         # A motor adjustment invalidates current scan coordinates, even on failure.
         self.points = []
-        self.gcode.run_script_from_command(method + " SAMPLES=1 RETRIES=0")
-        self.gcode.run_script_from_command(
-            "%s RETRIES=%d RETRY_TOLERANCE=%.6f" %
-            (method, self.level_retries, self.level_tolerance))
+        try:
+            with observer if observer is not None else nullcontext():
+                self.gcode.run_script_from_command(method + " SAMPLES=1 RETRIES=0")
+                if observer is not None:
+                    observer.phase = "refinement"
+                self.gcode.run_script_from_command(
+                    "%s RETRIES=%d RETRY_TOLERANCE=%.6f" %
+                    (method, self.level_retries, self.level_tolerance))
+                if observer is not None:
+                    observer.completed = True
+        finally:
+            if observer is not None:
+                try:
+                    report = json.dumps(observer.report(), allow_nan=False)
+                except (ValueError, TypeError):
+                    report = '{"shadow_only": true, "error": "Invalid diagnostic data"}'
+                gcmd.respond_info("AVP QGL shadow: " + report)
         gcmd.respond_info("AVP native gantry leveling completed")
+
+    def observe_shadow_probe(self, results):
+        observer = getattr(self, "shadow_observer", None)
+        if observer is not None:
+            observer.observe(results)
 
     def cmd_AVP_HISTORY(self, gcmd):
         limit = gcmd.get_int("LIMIT", 10, minval=1, maxval=self.history_limit)

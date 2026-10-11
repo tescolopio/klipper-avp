@@ -37,6 +37,7 @@ Home XYZ before any probing, mesh calibration, or leveling.
 | `AVP_MESH ADAPTIVE=1 ADAPTIVE_MARGIN=5` | Install a native Klipper bed mesh with history-selected grid density and optional print-area clipping. Requires rectangular `[bed_mesh]`; object clipping uses Klipper's `[exclude_object]`. |
 | `AVP_CLEARANCE X0=30 Y0=30 X1=180 Y1=180` | Report estimated path peak and recommended nozzle Z, without moving. XY is in measured bed coordinates. |
 | `AVP_LEVEL METHOD=AUTO` | Single-sample coarse adjustment, then native tolerance-checked leveling. Supports `QUAD_GANTRY_LEVEL` or `Z_TILT_ADJUST` explicitly; AUTO prefers QGL. |
+| `AVP_LEVEL METHOD=QUAD_GANTRY_LEVEL SHADOW=1` | Observe ordinary QGL with prediction/error reports and unchanged native motion. Requires the pinned Klipper version; see [shadow testing](docs/shadow-testing.md). |
 | `AVP_HISTORY LIMIT=10` | Report timestamped scans, bed temperature, tilt, height range, detrended warp/RMS, and changes between the latest two scans. |
 
 Grid density starts at `min_probe_count`. Subsequent scans and meshes use the
@@ -148,8 +149,10 @@ for implemented features, remaining gaps, results, and next acceptance criteria.
 The new [history context checks](docs/history-context.md) are an offline API;
 Klipper commands do not yet enforce age or temperature limits.
 
-The [variable-speed prototype](docs/variable-speed-prototype.md) is isolated in
+The [variable-speed motion prototype](docs/variable-speed-prototype.md) is isolated in
 `experiments/` and is not imported by the printer adapter. It explores monitored
 two-speed descent and one-use preparation against simulated hardware. Run its
 offline, synthetic corner report with `python3 -m experiments.variable_speed_demo`.
 It does not enable accelerated printer motion.
+The separate opt-in [QGL shadow observer](docs/shadow-testing.md) runs alongside
+ordinary native QGL to gather prediction evidence without changing motion.

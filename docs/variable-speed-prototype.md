@@ -1,9 +1,10 @@
 # Variable-speed probing: offline prototype
 
-Status: research code in `experiments/`, with no import from the production AVP
-adapter, no G-code registration, and no live-printer backend. This PR is stacked
-on PR #3. Do not install it on BigBoom to enable acceleration: it cannot do so.
-The installed baseline and PR #3 remain unchanged by this work.
+Status: motion research code remains in `experiments/`, with no import from the
+production AVP adapter and no live variable-speed backend. PR #3 is merged and
+this PR targets main. A separate opt-in [QGL shadow observer](shadow-testing.md)
+now collects predictions during ordinary QGL. Installing it does not enable
+acceleration; the printer changes only when the operator updates it.
 
 ## The intended four-corner workflow
 
@@ -52,7 +53,9 @@ approach speed must remain conservative even when ample predicted clearance exis
 trigger-height shift and shift uncertainty. It does not equate raw motor
 adjustments with a toolhead-coordinate shift. A model must include gantry geometry,
 all four actuator changes and Klipper's coordinate reassignment. The current demo
-supplies synthetic shifts; no physical QGL transform has been implemented yet.
+supplies synthetic shifts. The separate shadow observer implements an ideal
+bilinear transform tested against native `ZAdjustHelper`; its accuracy on the
+physical gantry remains to be measured.
 
 Preparation invalidation is tested as policy for homing, QGL/Z tilt, all/individual
 motor disable, restart/disconnect, offsets, plate reset and thermal changes. These
@@ -104,10 +107,9 @@ python3 -m unittest discover -s tests/integration -v
 
 ## Remaining work before any hardware enablement
 
-1. Exercise the actual `ZAdjustHelper` coordinate changes with a modeled gantry,
-   derive the sign and magnitude of each corner's post-adjustment trigger shift,
-   and compare predictions against fresh native measurements. Until validated,
-   unknown transforms must fall back to native probing.
+1. The ideal transform is now tested against actual `ZAdjustHelper` coordinate
+   changes with simulated motors. Compare its predictions against fresh native
+   measurements using shadow mode. No measured uncertainty bound exists yet.
 2. Build a pinned-version probe backend with verified endstop/stepper attachment,
    Tap activation/deactivation and thermal protections, native sampling ownership,
    position reconciliation and command-error cleanup. Test the full lifecycle,
@@ -115,9 +117,9 @@ python3 -m unittest discover -s tests/integration -v
 3. Wire invalidation at every real entry point. In-flight invalidation must invoke
    the appropriate native stop/shutdown behavior; the policy alone only prevents
    subsequent stages. Plate changes require operator acknowledgement.
-4. Add observation-only logging around ordinary QGL first. Capture predicted slow
-   regions, actual next-pass trigger points, frame changes, temperatures and retries.
-   Do not enable faster motion or lower travel while collecting that evidence.
+4. Collect the implemented observation-only QGL report: proposed slow regions,
+   actual next-pass trigger points, adjustments, temperatures and raw touches.
+   Motion speeds and travel heights stay native while collecting that evidence.
 5. After mechanical inspection and stable native probing, review measured stopping
    behavior and an explicit supervised acceptance plan before enabling any motion.
 

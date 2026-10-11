@@ -4,7 +4,7 @@ import tempfile
 import unittest
 
 from avp.core.probing import (
-    adaptive_count, clearance_prediction, grid_points, predict_height,
+    adaptive_count, clearance_prediction, grid_points, predict_height, scan_heights,
 )
 from avp.analytics.topography import surface_stats
 from avp.history.storage import History
@@ -16,6 +16,31 @@ def plane():
 
 
 class PlanningTests(unittest.TestCase):
+    def test_scan_height_envelopes_for_positive_and_negative_probe_offsets(self):
+        for offset in (-1.372, 0., 1., 12.):
+            for bound in (-.5, 0., .5, 15.):
+                with self.subTest(offset=offset, bound=bound):
+                    fast = scan_heights(10., 2., offset, bound, True)
+                    slow = scan_heights(10., 2., offset, bound, False)
+                    self.assertEqual(fast["travel_z"], slow["travel_z"])
+                    self.assertGreaterEqual(fast["travel_z"], 10.)
+                    self.assertGreaterEqual(fast["travel_z"], fast["approach_z"])
+                    self.assertGreaterEqual(fast["approach_z"], bound + 2.)
+                    self.assertGreaterEqual(fast["approach_z"], bound + offset + 2.)
+                    self.assertIsNone(slow["approach_z"])
+
+    def test_scan_height_invalid_inputs_and_overflow_rejected(self):
+        for args in ((0, 2, 0), (10, -1, 0), (10, 2, math.nan),
+                     (math.inf, 2, 0), (10, 2, 0, math.inf),
+                     (10, 1.e308, 1.e308), (10, 2, 0, None, True)):
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                scan_heights(*args)
+
+    def test_scan_without_bound_has_no_fast_descent(self):
+        report = scan_heights(10, 2, -1.372)
+        self.assertIsNone(report["approach_z"])
+        self.assertEqual(report["travel_z"], 10)
+
     def test_tilt_does_not_increase_grid_density(self):
         stats = surface_stats(plane())
         self.assertAlmostEqual(stats["tilt_x"], .01)
